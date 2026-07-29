@@ -1,0 +1,6 @@
+nautilus_trader==1.221.0
+fastapi>=0.111
+uvicorn>=0.30
+httpx>=0.27
+pandas>=2.0
+numpy>=1.26

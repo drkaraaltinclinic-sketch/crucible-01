@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CRUCIBLE-01 · The Forge</title>
+<style>
+:root{--bg:#0b0e14;--panel:#121722;--line:#1e2636;--text:#d6dce8;--dim:#7d8aa0;--green:#3ecf8e;--amber:#e8b339;--red:#e05252;--blue:#4a90d9;--orange:#e8763a}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:14px/1.5 'SF Mono',Menlo,Consolas,monospace;padding:18px;max-width:1150px;margin:0 auto}
+h1{font-size:19px}
+.sub{color:var(--dim);font-size:12px;margin:4px 0 16px}
+.bar{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.pill{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:4px 12px;font-size:12px;color:var(--dim)}
+.pill b{color:var(--text)}
+.grid{display:grid;grid-template-columns:340px 1fr;gap:16px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.panel h2{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
+label{display:block;font-size:11px;color:var(--dim);margin:10px 0 4px}
+input,select{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:8px;font:inherit}
+button{background:var(--orange);border:0;border-radius:6px;color:#fff;padding:9px 16px;font:inherit;cursor:pointer;margin-top:12px}
+button:disabled{opacity:.5;cursor:wait}
+.assay{border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;background:var(--bg)}
+.assay-top{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-weight:700}
+.k{color:var(--dim)}
+.good{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+.mrow{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin:3px 0}
+#msg{font-size:12px;margin-top:8px;color:var(--amber);min-height:16px}
+.empty{color:var(--dim);text-align:center;padding:30px 10px}
+</style>
+</head>
+<body>
+<h1>🔥 CRUCIBLE-01 · The Forge</h1>
+<div class="sub">load → forge → assay → archive · powered by NautilusTrader · the crucible measures, it never trades</div>
+<div class="bar">
+  <span class="pill">STATUS <b id="st">…</b></span>
+  <span class="pill">ASSAYS <b id="count">0</b></span>
+  <span class="pill">VAULT <b id="vault">…</b></span>
+  <span class="pill">ENGINE <b>nautilus</b></span>
+</div>
+<div class="grid">
+  <div class="panel">
+    <h2>Run an assay</h2>
+    <label>Strategy template</label>
+    <select id="f-strategy"></select>
+    <label>Symbol</label>
+    <select id="f-symbol"><option>BTC</option><option>ETH</option></select>
+    <label>Interval</label>
+    <select id="f-interval"><option>1h</option><option>4h</option><option>15m</option><option>1d</option></select>
+    <label>History (days)</label>
+    <input id="f-days" type="number" value="180" min="7" max="365">
+    <label>Fast EMA</label>
+    <input id="f-fast" type="number" value="12">
+    <label>Slow EMA</label>
+    <input id="f-slow" type="number" value="48">
+    <label>Note (optional)</label>
+    <input id="f-note" placeholder="why this run">
+    <button id="go" onclick="runForge()">Forge it</button>
+    <button style="background:var(--blue)" onclick="selftest()">Self-test (synthetic)</button>
+    <div id="msg"></div>
+  </div>
+  <div class="panel">
+    <h2>Assay archive</h2>
+    <div id="list"><div class="empty">🔥 The forge is cold.<br>Run a self-test to prove the engine, then assay a strategy against real Hyperliquid history.</div></div>
+  </div>
+</div>
+<script>
+async function refresh(){
+  try{
+    const h=await (await fetch('/health')).json();
+    document.getElementById('st').textContent=h.status;
+    document.getElementById('vault').textContent=h.volume?'VOLUME ✓':'EPHEMERAL ⚠';
+    const sel=document.getElementById('f-strategy');
+    if(!sel.options.length){h.strategies.forEach(s=>{const o=document.createElement('option');o.textContent=s;sel.appendChild(o);});}
+    const d=await (await fetch('/results')).json();
+    render(d.assays||[]);
+  }catch(e){document.getElementById('st').textContent='UNREACHABLE';}
+}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function render(list){
+  document.getElementById('count').textContent=list.length;
+  const el=document.getElementById('list');
+  if(!list.length)return;
+  el.innerHTML='';
+  list.forEach(r=>{
+    const a=r.assay||{};
+    const pf=a.profitFactor;
+    const pfCls=pf==null?'k':pf>=1.2?'good':pf>=1?'warn':'bad';
+    const div=document.createElement('div');div.className='assay';
+    div.innerHTML=`
+      <div class="assay-top">#${r.id} ${esc(r.strategy)} · ${esc(r.symbol)} ${esc(r.interval)} · ${r.days}d
+        <span class="${pfCls}">PF ${pf==null?'—':pf}</span>
+        <span class="${(a.returnPct||0)>=0?'good':'bad'}">${a.returnPct>=0?'+':''}${a.returnPct}%</span></div>
+      <div class="mrow"><span><span class="k">trades</span> ${a.trades}</span>
+        <span><span class="k">win</span> ${a.winRatePct??'—'}%</span>
+        <span><span class="k">maxDD</span> ${a.maxDrawdownPct}%</span>
+        <span><span class="k">fees</span> $${a.commissionsPaid}</span>
+        <span><span class="k">net</span> $${a.netPnl}</span></div>
+      <div class="mrow"><span class="k">${esc(a.periodStart)} → ${esc(a.periodEnd)} · ${a.bars} bars${r.note?' · '+esc(r.note):''}${r.codexId?' · codex #'+r.codexId:''}</span></div>`;
+    el.appendChild(div);
+  });
+}
+async function runForge(){
+  const b=document.getElementById('go'),m=document.getElementById('msg');
+  b.disabled=true;m.textContent='🔥 forging — loading history + running engine (10-60s)…';
+  try{
+    const body={strategy:document.getElementById('f-strategy').value,symbol:document.getElementById('f-symbol').value,
+      interval:document.getElementById('f-interval').value,days:+document.getElementById('f-days').value,
+      note:document.getElementById('f-note').value,
+      params:{fast:+document.getElementById('f-fast').value,slow:+document.getElementById('f-slow').value}};
+    const r=await fetch('/forge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(!r.ok)throw new Error(j.detail||r.status);
+    m.textContent=`✓ assay #${j.id} complete — PF ${j.assay.profitFactor??'—'}, ${j.assay.trades} trades`;
+    refresh();
+  }catch(e){m.textContent='⚠ '+e.message;}
+  b.disabled=false;
+}
+async function selftest(){
+  const m=document.getElementById('msg');m.textContent='running self-test…';
+  try{
+    const r=await fetch('/selftest',{method:'POST'});
+    const j=await r.json();
+    m.textContent=`✓ engine proven: ${j.trades} trades on synthetic data, PF ${j.profitFactor??'—'}`;
+  }catch(e){m.textContent='⚠ '+e.message;}
+}
+refresh();setInterval(refresh,30000);
+</script>
+</body>
+</html>
