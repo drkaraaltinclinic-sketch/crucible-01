@@ -34,7 +34,6 @@ from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.examples.strategies.ema_cross import EMACross, EMACrossConfig
 from src.crucible_trend import CrucibleTrend, CrucibleTrendConfig
-from src.crucible_reversion import CrucibleReversion, CrucibleReversionConfig
 from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType, OmsType
@@ -55,9 +54,40 @@ _forge_lock = threading.Lock()
 _started = time.time()
 
 # ── Instruments (v1: symbols with battle-tested definitions; fees noted) ─────
+def _mk_perp(base_code, price_prec, price_inc, size_prec, size_inc):
+    """Factory for additional USDT-margined perps mirroring the test-kit definitions
+    (same fee schedule: maker 0.02% / taker 0.04% — conservative vs Hyperliquid).
+    Added 2026-08-17 for the diversity assays directed by Dr K."""
+    from nautilus_trader.model import currencies as _cur
+    from nautilus_trader.model.identifiers import InstrumentId, Symbol
+    from nautilus_trader.model.instruments import CryptoPerpetual
+    from nautilus_trader.model.objects import Price, Quantity
+
+    base = getattr(_cur, base_code)
+
+    def build():
+        return CryptoPerpetual(
+            instrument_id=InstrumentId(Symbol(f"{base_code}USDT-PERP"), Venue("BINANCE")),
+            raw_symbol=Symbol(f"{base_code}USDT"),
+            base_currency=base, quote_currency=USDT, settlement_currency=USDT,
+            is_inverse=False,
+            price_precision=price_prec, size_precision=size_prec,
+            price_increment=Price.from_str(price_inc), size_increment=Quantity.from_str(size_inc),
+            max_quantity=Quantity.from_str("100000000"), min_quantity=Quantity.from_str(size_inc),
+            max_notional=None, min_notional=Money(10.00, USDT),
+            max_price=Price.from_str("1000000"), min_price=Price.from_str(price_inc),
+            margin_init=Decimal("1.00"), margin_maint=Decimal("0.35"),
+            maker_fee=Decimal("0.0002"), taker_fee=Decimal("0.0004"),
+            ts_event=0, ts_init=0,
+        )
+    return build
+
 INSTRUMENTS = {
     "BTC": TestInstrumentProvider.btcusdt_perp_binance,
     "ETH": TestInstrumentProvider.ethusdt_perp_binance,
+    "SOL": _mk_perp("SOL", 3, "0.001", 1, "0.1"),
+    "XRP": _mk_perp("XRP", 4, "0.0001", 0, "1"),
+    "DOGE": _mk_perp("DOGE", 5, "0.00001", 0, "1"),
 }
 FEE_NOTE = ("v1 fee model: Binance-perp instrument definitions (maker 0.02%/taker 0.04%) — "
             "slightly conservative vs Hyperliquid taker 0.035%. Slippage beyond spread not modeled in v1.")
@@ -80,27 +110,11 @@ def _mk_crucible_trend(iid, bar_type, p):
         max_hold_bars=int(p.get("max_hold_bars", 72)),
         allow_shorts=bool(p.get("allow_shorts", True))))
 
-def _mk_crucible_reversion(iid, bar_type, p):
-    return CrucibleReversion(CrucibleReversionConfig(
-        instrument_id=iid, bar_type=bar_type,
-        trade_size=Decimal(str(p.get("trade_size", 0.1))),
-        fast_ema_period=int(p.get("fast", 12)), slow_ema_period=int(p.get("slow", 48)),
-        regime_band_pct=float(p.get("regime_band_pct", 0.75)),
-        rsi_period=int(p.get("rsi_period", 14)),
-        rsi_buy=float(p.get("rsi_buy", 30.0)), rsi_sell=float(p.get("rsi_sell", 70.0)),
-        atr_period=int(p.get("atr_period", 14)),
-        atr_stop_mult=float(p.get("atr_stop_mult", 1.5)),
-        target_r=float(p.get("target_r", 2.0)),
-        max_hold_bars=int(p.get("max_hold_bars", 72)),
-        allow_shorts=bool(p.get("allow_shorts", True))))
-
 STRATEGIES = {
     "ema_cross": {"make": _mk_ema_cross,
                   "desc": "Canonical EMA cross, market in/out. Params: fast, slow, trade_size."},
     "crucible_trend": {"make": _mk_crucible_trend,
                        "desc": "The forge's native template — SUPREME-LEADER mechanics: EMA-cross entries (both sides), ATR stop, R-multiple target, time stop, bar-close management. Params: fast, slow, atr_period, atr_stop_mult, target_r, max_hold_bars, allow_shorts, trade_size."},
-    "crucible_reversion": {"make": _mk_crucible_reversion,
-                           "desc": "Regime-gated mean reversion (CODEX card #4 style): trades only when |fastEMA-slowEMA|/close*100 < regime_band_pct; RSI<=rsi_buy buys fear, RSI>=rsi_sell fades greed; management identical to crucible_trend. Params: fast, slow, regime_band_pct, rsi_period, rsi_buy, rsi_sell, atr_period, atr_stop_mult, target_r, max_hold_bars, allow_shorts, trade_size."},
 }
 
 # ── Data: Hyperliquid public candles ─────────────────────────────────────────
@@ -289,95 +303,6 @@ def forge(req: ForgeRequest):
         return entry
     finally:
         _forge_lock.release()
-
-def _run_forge_now(req: "ForgeRequest") -> dict:
-    """Shared forge body — validates, runs, archives. Caller holds no lock."""
-    if req.strategy not in STRATEGIES:
-        raise HTTPException(400, f"unknown strategy — have: {list(STRATEGIES.keys())}")
-    if req.symbol not in INSTRUMENTS:
-        raise HTTPException(400, f"v1 symbols: {list(INSTRUMENTS.keys())}")
-    if req.interval not in INTERVAL_MS:
-        raise HTTPException(400, f"intervals: {list(INTERVAL_MS.keys())}")
-    days = min(req.days, MAX_DAYS)
-    with _forge_lock:
-        df = fetch_hl_candles(req.symbol, req.interval, days)
-        assay = run_backtest(req.symbol, req.interval, df, req.strategy, req.params)
-        entry = {"at": datetime.now(timezone.utc).isoformat(),
-                 "strategy": req.strategy, "symbol": req.symbol, "interval": req.interval,
-                 "days": days, "params": req.params, "note": req.note,
-                 "codexId": req.codexId, "assay": assay}
-        _save_result(entry)
-        return entry
-
-
-_queue_depth = 0
-_queue_guard = threading.Lock()
-MAX_QUEUE = 12
-
-
-@app.get("/forge/trigger")
-def forge_trigger(strategy: str = "crucible_trend", symbol: str = "BTC",
-                  interval: str = "1h", days: int = 180, note: str = "",
-                  codexId: int | None = None,
-                  fast: int | None = None, slow: int | None = None,
-                  atr_period: int | None = None, atr_stop_mult: float | None = None,
-                  target_r: float | None = None, max_hold_bars: int | None = None,
-                  allow_shorts: int | None = None, trade_size: float | None = None,
-                  regime_band_pct: float | None = None, rsi_period: int | None = None,
-                  rsi_buy: float | None = None, rsi_sell: float | None = None):
-    """GET trigger for environments that cannot POST (e.g. the Sultan's Review
-    fetch channel). Queues the assay on a background thread and returns
-    immediately; the result lands in /results when the forge cools."""
-    global _queue_depth
-    params = {k: v for k, v in {
-        "fast": fast, "slow": slow, "atr_period": atr_period,
-        "atr_stop_mult": atr_stop_mult, "target_r": target_r,
-        "max_hold_bars": max_hold_bars, "trade_size": trade_size,
-        "regime_band_pct": regime_band_pct, "rsi_period": rsi_period,
-        "rsi_buy": rsi_buy, "rsi_sell": rsi_sell,
-    }.items() if v is not None}
-    if allow_shorts is not None:
-        params["allow_shorts"] = bool(allow_shorts)
-    req = ForgeRequest(strategy=strategy, symbol=symbol, interval=interval,
-                       days=days, params=params, note=note or "get-trigger",
-                       codexId=codexId)
-    # cheap validation before queueing so bad specs fail loudly at trigger time
-    if req.strategy not in STRATEGIES:
-        raise HTTPException(400, f"unknown strategy — have: {list(STRATEGIES.keys())}")
-    if req.symbol not in INSTRUMENTS:
-        raise HTTPException(400, f"v1 symbols: {list(INSTRUMENTS.keys())}")
-    if req.interval not in INTERVAL_MS:
-        raise HTTPException(400, f"intervals: {list(INTERVAL_MS.keys())}")
-    with _queue_guard:
-        if _queue_depth >= MAX_QUEUE:
-            raise HTTPException(429, f"forge queue full ({MAX_QUEUE})")
-        _queue_depth += 1
-
-    def _work():
-        global _queue_depth
-        try:
-            _run_forge_now(req)
-        except Exception as e:  # archive failures too — invisible errors are worse
-            _save_result({"at": datetime.now(timezone.utc).isoformat(),
-                          "strategy": req.strategy, "symbol": req.symbol,
-                          "interval": req.interval, "days": req.days,
-                          "params": req.params, "note": req.note,
-                          "codexId": req.codexId,
-                          "assay": None, "error": str(e)[:300]})
-        finally:
-            with _queue_guard:
-                _queue_depth -= 1
-
-    threading.Thread(target=_work, daemon=True).start()
-    return {"queued": True, "strategy": req.strategy, "symbol": req.symbol,
-            "interval": req.interval, "days": min(req.days, MAX_DAYS),
-            "params": params, "queueDepth": _queue_depth}
-
-
-@app.get("/forge/queue")
-def forge_queue():
-    return {"queueDepth": _queue_depth, "busy": _forge_lock.locked()}
-
 
 @app.get("/")
 def index():
