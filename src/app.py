@@ -248,6 +248,62 @@ def _save_result(entry: dict) -> None:
     results.insert(0, entry)
     json.dump(results[:500], open(RESULTS_FILE, "w"))
 
+# ── Boot battery (Sultan's Review 2026-08-25) ────────────────────────────────
+# Standing assays that must exist in the archive. On every boot, any spec not
+# yet archived is forged automatically — so a redeploy IS the invocation, and
+# no POST access is required. Idempotent: matched by strategy/symbol/interval/
+# days/params against the archive, so completed assays never re-run.
+# The Crucible still only measures; it never trades.
+BATTERY_ON = os.environ.get("BATTERY_ON", "1") != "0"
+BATTERY_NOTE = "AUTO-BATTERY diversity: 8/24 trend clone test (XRP/DOGE)"
+BATTERY = [
+    {"strategy": "crucible_trend", "symbol": "XRP", "interval": "4h", "days": 365,
+     "params": {"fast": 8, "slow": 24}},
+    {"strategy": "crucible_trend", "symbol": "XRP", "interval": "4h", "days": 90,
+     "params": {"fast": 8, "slow": 24}},
+    {"strategy": "crucible_trend", "symbol": "DOGE", "interval": "4h", "days": 365,
+     "params": {"fast": 8, "slow": 24}},
+    {"strategy": "crucible_trend", "symbol": "DOGE", "interval": "4h", "days": 90,
+     "params": {"fast": 8, "slow": 24}},
+]
+_battery_state = {"pending": len(BATTERY), "ran": 0, "errors": []}
+
+def _battery_missing() -> list:
+    done = _load_results()
+    missing = []
+    for spec in BATTERY:
+        hit = any(r.get("strategy") == spec["strategy"] and r.get("symbol") == spec["symbol"]
+                  and r.get("interval") == spec["interval"] and r.get("days") == spec["days"]
+                  and r.get("params") == spec["params"] for r in done)
+        if not hit:
+            missing.append(spec)
+    return missing
+
+def _run_battery():
+    time.sleep(60)  # let the service settle; avoids hammering HL on crash loops
+    for spec in _battery_missing():
+        try:
+            with _forge_lock:
+                df = fetch_hl_candles(spec["symbol"], spec["interval"], spec["days"])
+                assay = run_backtest(spec["symbol"], spec["interval"], df,
+                                     spec["strategy"], spec["params"])
+                entry = {"at": datetime.now(timezone.utc).isoformat(),
+                         "strategy": spec["strategy"], "symbol": spec["symbol"],
+                         "interval": spec["interval"], "days": spec["days"],
+                         "params": spec["params"], "note": BATTERY_NOTE,
+                         "codexId": None, "assay": assay}
+                _save_result(entry)
+            _battery_state["ran"] += 1
+        except Exception as exc:  # keep going; missing specs retry on next boot
+            _battery_state["errors"].append(f"{spec['symbol']} {spec['days']}d: {exc}")
+        time.sleep(10)
+    _battery_state["pending"] = len(_battery_missing())
+
+@app.on_event("startup")
+def _battery_startup():
+    if BATTERY_ON:
+        threading.Thread(target=_run_battery, daemon=True).start()
+
 # ── API ──────────────────────────────────────────────────────────────────────
 class ForgeRequest(BaseModel):
     strategy: str = Field(default="crucible_trend")
@@ -263,6 +319,7 @@ def health():
     return {"agent": "CRUCIBLE-01", "status": "LIVE", "role": "EVIDENCE-ENGINE",
             "engine": "nautilus_trader", "uptime": int((time.time() - _started) * 1000),
             "volume": os.path.isdir("/data"), "assays": len(_load_results()),
+            "battery": {"on": BATTERY_ON, **_battery_state},
             "strategies": list(STRATEGIES.keys()), "symbols": list(INSTRUMENTS.keys())}
 
 @app.get("/strategies")
