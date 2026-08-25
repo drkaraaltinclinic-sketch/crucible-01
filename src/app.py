@@ -257,14 +257,16 @@ def _save_result(entry: dict) -> None:
 BATTERY_ON = os.environ.get("BATTERY_ON", "1") != "0"
 BATTERY_NOTE = "AUTO-BATTERY diversity: 8/24 trend clone test (XRP/DOGE)"
 BATTERY = [
+    # trade_size: XRP/DOGE are whole-coin instruments (size precision 0) — the
+    # 0.1 default rounds to zero and the engine rejects the order.
     {"strategy": "crucible_trend", "symbol": "XRP", "interval": "4h", "days": 365,
-     "params": {"fast": 8, "slow": 24}},
+     "params": {"fast": 8, "slow": 24, "trade_size": 100}},
     {"strategy": "crucible_trend", "symbol": "XRP", "interval": "4h", "days": 90,
-     "params": {"fast": 8, "slow": 24}},
+     "params": {"fast": 8, "slow": 24, "trade_size": 100}},
     {"strategy": "crucible_trend", "symbol": "DOGE", "interval": "4h", "days": 365,
-     "params": {"fast": 8, "slow": 24}},
+     "params": {"fast": 8, "slow": 24, "trade_size": 1000}},
     {"strategy": "crucible_trend", "symbol": "DOGE", "interval": "4h", "days": 90,
-     "params": {"fast": 8, "slow": 24}},
+     "params": {"fast": 8, "slow": 24, "trade_size": 1000}},
 ]
 _battery_state = {"pending": len(BATTERY), "ran": 0, "errors": []}
 
