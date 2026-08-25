@@ -34,6 +34,7 @@ from nautilus_trader.backtest.engine import BacktestEngine, BacktestEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.examples.strategies.ema_cross import EMACross, EMACrossConfig
 from src.crucible_trend import CrucibleTrend, CrucibleTrendConfig
+from src.crucible_reversion import CrucibleReversion, CrucibleReversionConfig
 from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType, OmsType
@@ -110,9 +111,25 @@ def _mk_crucible_trend(iid, bar_type, p):
         max_hold_bars=int(p.get("max_hold_bars", 72)),
         allow_shorts=bool(p.get("allow_shorts", True))))
 
+def _mk_crucible_reversion(iid, bar_type, p):
+    return CrucibleReversion(CrucibleReversionConfig(
+        instrument_id=iid, bar_type=bar_type,
+        trade_size=Decimal(str(p.get("trade_size", 0.1))),
+        fast_ema_period=int(p.get("fast", 12)), slow_ema_period=int(p.get("slow", 48)),
+        regime_band_pct=float(p.get("regime_band_pct", 0.75)),
+        rsi_period=int(p.get("rsi_period", 14)),
+        rsi_buy=float(p.get("rsi_buy", 30.0)), rsi_sell=float(p.get("rsi_sell", 70.0)),
+        atr_period=int(p.get("atr_period", 14)),
+        atr_stop_mult=float(p.get("atr_stop_mult", 1.5)),
+        target_r=float(p.get("target_r", 2.0)),
+        max_hold_bars=int(p.get("max_hold_bars", 72)),
+        allow_shorts=bool(p.get("allow_shorts", True))))
+
 STRATEGIES = {
     "ema_cross": {"make": _mk_ema_cross,
                   "desc": "Canonical EMA cross, market in/out. Params: fast, slow, trade_size."},
+    "crucible_reversion": {"make": _mk_crucible_reversion,
+                           "desc": "Regime-gated mean reversion (CODEX card #4 style): trades only ranging tape (|fastEMA-slowEMA|/close < regime_band_pct), RSI extremes entries, CrucibleTrend management. Params: fast, slow, regime_band_pct, rsi_period, rsi_buy, rsi_sell, atr_period, atr_stop_mult, target_r, max_hold_bars, allow_shorts, trade_size."},
     "crucible_trend": {"make": _mk_crucible_trend,
                        "desc": "The forge's native template — SUPREME-LEADER mechanics: EMA-cross entries (both sides), ATR stop, R-multiple target, time stop, bar-close management. Params: fast, slow, atr_period, atr_stop_mult, target_r, max_hold_bars, allow_shorts, trade_size."},
 }
@@ -267,6 +284,22 @@ BATTERY = [
      "params": {"fast": 8, "slow": 24, "trade_size": 1000}},
     {"strategy": "crucible_trend", "symbol": "DOGE", "interval": "4h", "days": 90,
      "params": {"fast": 8, "slow": 24, "trade_size": 1000}},
+    # Round 2 (Dr K-directed, 2026-08-25): DOGE lead resolution + second-sleeve
+    # hunt — regime-gated reversion probes (template re-registered this commit).
+    {"strategy": "crucible_trend", "symbol": "DOGE", "interval": "4h", "days": 180,
+     "params": {"fast": 8, "slow": 24, "trade_size": 1000},
+     "note": "DOGE 90d lead resolution"},
+    {"strategy": "crucible_trend", "symbol": "DOGE", "interval": "4h", "days": 270,
+     "params": {"fast": 8, "slow": 24, "trade_size": 1000},
+     "note": "DOGE 90d lead resolution"},
+    {"strategy": "crucible_reversion", "symbol": "BTC", "interval": "1h", "days": 90,
+     "params": {}, "note": "second-sleeve hunt: re-confirm assay #36"},
+    {"strategy": "crucible_reversion", "symbol": "BTC", "interval": "1h", "days": 180,
+     "params": {}, "note": "second-sleeve hunt: does the 90d edge survive 180d"},
+    {"strategy": "crucible_reversion", "symbol": "ETH", "interval": "1h", "days": 90,
+     "params": {}, "note": "second-sleeve hunt: reversion on ETH"},
+    {"strategy": "crucible_reversion", "symbol": "ETH", "interval": "1h", "days": 180,
+     "params": {}, "note": "second-sleeve hunt: reversion on ETH"},
 ]
 _battery_state = {"pending": len(BATTERY), "ran": 0, "errors": []}
 
@@ -292,7 +325,7 @@ def _run_battery():
                 entry = {"at": datetime.now(timezone.utc).isoformat(),
                          "strategy": spec["strategy"], "symbol": spec["symbol"],
                          "interval": spec["interval"], "days": spec["days"],
-                         "params": spec["params"], "note": BATTERY_NOTE,
+                         "params": spec["params"], "note": spec.get("note", BATTERY_NOTE),
                          "codexId": None, "assay": assay}
                 _save_result(entry)
             _battery_state["ran"] += 1
