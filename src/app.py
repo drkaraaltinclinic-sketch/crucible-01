@@ -35,6 +35,7 @@ from nautilus_trader.config import LoggingConfig
 from nautilus_trader.examples.strategies.ema_cross import EMACross, EMACrossConfig
 from src.crucible_trend import CrucibleTrend, CrucibleTrendConfig
 from src.crucible_reversion import CrucibleReversion, CrucibleReversionConfig
+from src.crucible_rotation import run_rotation
 from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType, OmsType
@@ -185,6 +186,19 @@ def synthetic_candles(n: int = 1500) -> pd.DataFrame:
     return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close,
                          "volume": rng.uniform(50, 500, n)}, index=idx)
 
+# ── Rotation assays (Dr K directive 2026-08-25: all-tokens end-state layer) ──
+# Vectorized cross-sectional sim over raw HL closes — any listed coin works
+# (incl. HYPE), no Nautilus instrument definition needed. See crucible_rotation.py.
+ROTATION_UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE"]
+
+def run_rotation_assay(interval: str, days: int, params: dict) -> dict:
+    universe = list(params.get("universe", ROTATION_UNIVERSE))
+    closes = {}
+    for sym in universe:
+        df = fetch_hl_candles(sym, interval, days)
+        closes[sym] = [(str(ts), float(c)) for ts, c in df["close"].items()]
+    return run_rotation(closes, params)
+
 # ── The forge itself ─────────────────────────────────────────────────────────
 def run_backtest(symbol: str, interval: str, df: pd.DataFrame, strategy_key: str, params: dict) -> dict:
     instrument = INSTRUMENTS[symbol]()
@@ -300,6 +314,26 @@ BATTERY = [
      "params": {}, "note": "second-sleeve hunt: reversion on ETH"},
     {"strategy": "crucible_reversion", "symbol": "ETH", "interval": "1h", "days": 180,
      "params": {}, "note": "second-sleeve hunt: reversion on ETH"},
+    # Round 3 (Dr K-approved 2026-08-25 evening, folded into the Aug 28 review):
+    # (1) ETH reversion full-year confirmation; (2) first cross-sectional
+    # rotation assays — the all-tokens end-state layer, ranked by relative
+    # strength, top-N held, weekly rebalance. HYPE universe truncates the
+    # aligned window to HYPE's listing history; the no-HYPE spec covers the
+    # full year for comparison.
+    {"strategy": "crucible_reversion", "symbol": "ETH", "interval": "1h", "days": 365,
+     "params": {}, "note": "second-sleeve hunt: does ETH reversion hold at 365d"},
+    {"strategy": "rotation", "symbol": "ROTATION", "interval": "1d", "days": 365,
+     "params": {"universe": ROTATION_UNIVERSE, "lookback_bars": 30, "top_n": 2,
+                "rebalance_bars": 7},
+     "note": "rotation v1: 6-coin universe incl HYPE, 30d RS, top-2, weekly"},
+    {"strategy": "rotation", "symbol": "ROTATION", "interval": "1d", "days": 365,
+     "params": {"universe": ROTATION_UNIVERSE, "lookback_bars": 14, "top_n": 2,
+                "rebalance_bars": 7},
+     "note": "rotation v1: faster 14d RS ranking"},
+    {"strategy": "rotation", "symbol": "ROTATION", "interval": "1d", "days": 365,
+     "params": {"universe": ["BTC", "ETH", "SOL", "XRP", "DOGE"], "lookback_bars": 30,
+                "top_n": 2, "rebalance_bars": 7},
+     "note": "rotation v1: majors-only (full-year window, no HYPE truncation)"},
 ]
 _battery_state = {"pending": len(BATTERY), "ran": 0, "errors": []}
 
@@ -319,9 +353,12 @@ def _run_battery():
     for spec in _battery_missing():
         try:
             with _forge_lock:
-                df = fetch_hl_candles(spec["symbol"], spec["interval"], spec["days"])
-                assay = run_backtest(spec["symbol"], spec["interval"], df,
-                                     spec["strategy"], spec["params"])
+                if spec["strategy"] == "rotation":
+                    assay = run_rotation_assay(spec["interval"], spec["days"], spec["params"])
+                else:
+                    df = fetch_hl_candles(spec["symbol"], spec["interval"], spec["days"])
+                    assay = run_backtest(spec["symbol"], spec["interval"], df,
+                                         spec["strategy"], spec["params"])
                 entry = {"at": datetime.now(timezone.utc).isoformat(),
                          "strategy": spec["strategy"], "symbol": spec["symbol"],
                          "interval": spec["interval"], "days": spec["days"],
@@ -391,6 +428,30 @@ def forge(req: ForgeRequest):
                  "strategy": req.strategy, "symbol": req.symbol, "interval": req.interval,
                  "days": days, "params": req.params, "note": req.note,
                  "codexId": req.codexId, "assay": assay}
+        _save_result(entry)
+        return entry
+    finally:
+        _forge_lock.release()
+
+class RotationRequest(BaseModel):
+    interval: str = Field(default="1d")
+    days: int = Field(default=365, ge=30)
+    params: dict = Field(default_factory=dict)
+    note: str = Field(default="")
+
+@app.post("/forge_rotation")
+def forge_rotation(req: RotationRequest):
+    if req.interval not in INTERVAL_MS:
+        raise HTTPException(400, f"intervals: {list(INTERVAL_MS.keys())}")
+    days = min(req.days, MAX_DAYS)
+    if not _forge_lock.acquire(blocking=False):
+        raise HTTPException(429, "forge is busy — one assay at a time")
+    try:
+        assay = run_rotation_assay(req.interval, days, req.params)
+        entry = {"at": datetime.now(timezone.utc).isoformat(),
+                 "strategy": "rotation", "symbol": "ROTATION", "interval": req.interval,
+                 "days": days, "params": req.params, "note": req.note,
+                 "codexId": None, "assay": assay}
         _save_result(entry)
         return entry
     finally:
