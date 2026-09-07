@@ -35,6 +35,7 @@ from nautilus_trader.config import LoggingConfig
 from nautilus_trader.examples.strategies.ema_cross import EMACross, EMACrossConfig
 from src.crucible_trend import CrucibleTrend, CrucibleTrendConfig
 from src.crucible_reversion import CrucibleReversion, CrucibleReversionConfig
+from src.crucible_pullback import CruciblePullback, CruciblePullbackConfig
 from src.crucible_rotation import run_rotation
 from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.data import BarType
@@ -126,7 +127,22 @@ def _mk_crucible_reversion(iid, bar_type, p):
         max_hold_bars=int(p.get("max_hold_bars", 72)),
         allow_shorts=bool(p.get("allow_shorts", True))))
 
+def _mk_crucible_pullback(iid, bar_type, p):
+    return CruciblePullback(CruciblePullbackConfig(
+        instrument_id=iid, bar_type=bar_type,
+        trade_size=Decimal(str(p.get("trade_size", 0.1))),
+        fast_ema_period=int(p.get("fast", 8)),
+        mid_ema_period=int(p.get("mid", 21)),
+        slow_ema_period=int(p.get("slow", 50)),
+        atr_period=int(p.get("atr_period", 14)),
+        atr_stop_mult=float(p.get("atr_stop_mult", 1.5)),
+        target_r=float(p.get("target_r", 2.0)),
+        max_hold_bars=int(p.get("max_hold_bars", 72)),
+        allow_shorts=bool(p.get("allow_shorts", True))))
+
 STRATEGIES = {
+    "crucible_pullback": {"make": _mk_crucible_pullback,
+                          "desc": "CODEX card #66 (Setup123) entry architecture: EMA-stack trend filter (fast>mid>slow), pullback below fast EMA then resume above it, CrucibleTrend management. Isolates entry quality vs crucible_trend. Params: fast, mid, slow, atr_period, atr_stop_mult, target_r, max_hold_bars, allow_shorts, trade_size."},
     "ema_cross": {"make": _mk_ema_cross,
                   "desc": "Canonical EMA cross, market in/out. Params: fast, slow, trade_size."},
     "crucible_reversion": {"make": _mk_crucible_reversion,
@@ -334,6 +350,20 @@ BATTERY = [
      "params": {"universe": ["BTC", "ETH", "SOL", "XRP", "DOGE"], "lookback_bars": 30,
                 "top_n": 2, "rebalance_bars": 7},
      "note": "rotation v1: majors-only (full-year window, no HYPE truncation)"},
+    # CODEX sweep round 1 (Sultan's Review 2026-09-04, Dr K-approved Sep 1):
+    # card #66 Setup123 pullback entry architecture vs canonical #38, plus
+    # card #63 Multi_MA golden cross via ema_cross 50/200. Entry-quality hunt.
+    {"strategy": "crucible_pullback", "symbol": "BTC", "interval": "4h", "days": 365,
+     "params": {}, "codexId": 66, "note": "CODEX sweep: #66 Setup123 pullback, BTC 4h full-year vs canonical #38"},
+    {"strategy": "crucible_pullback", "symbol": "BTC", "interval": "4h", "days": 90,
+     "params": {}, "codexId": 66, "note": "CODEX sweep: #66 pullback, BTC 4h recent-regime check"},
+    {"strategy": "crucible_pullback", "symbol": "ETH", "interval": "4h", "days": 365,
+     "params": {}, "codexId": 66, "note": "CODEX sweep: #66 pullback, ETH 4h — does pullback timing travel where 8/24 cross did not"},
+    {"strategy": "crucible_pullback", "symbol": "BTC", "interval": "1d", "days": 365,
+     "params": {}, "codexId": 66, "note": "CODEX sweep: #66 pullback, BTC 1d slow-regime probe"},
+    {"strategy": "ema_cross", "symbol": "BTC", "interval": "4h", "days": 365,
+     "params": {"fast": 50, "slow": 200}, "codexId": 63,
+     "note": "CODEX sweep: #63 Multi_MA golden cross 50/200 on 4h (naive in/out baseline)"},
 ]
 _battery_state = {"pending": len(BATTERY), "ran": 0, "errors": []}
 
@@ -363,7 +393,7 @@ def _run_battery():
                          "strategy": spec["strategy"], "symbol": spec["symbol"],
                          "interval": spec["interval"], "days": spec["days"],
                          "params": spec["params"], "note": spec.get("note", BATTERY_NOTE),
-                         "codexId": None, "assay": assay}
+                         "codexId": spec.get("codexId"), "assay": assay}
                 _save_result(entry)
             _battery_state["ran"] += 1
         except Exception as exc:  # keep going; missing specs retry on next boot
