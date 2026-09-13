@@ -138,11 +138,12 @@ def _mk_crucible_pullback(iid, bar_type, p):
         atr_stop_mult=float(p.get("atr_stop_mult", 1.5)),
         target_r=float(p.get("target_r", 2.0)),
         max_hold_bars=int(p.get("max_hold_bars", 72)),
-        allow_shorts=bool(p.get("allow_shorts", True))))
+        allow_shorts=bool(p.get("allow_shorts", True)),
+        min_stack_sep_pct=float(p.get("min_stack_sep_pct", 0.0))))
 
 STRATEGIES = {
     "crucible_pullback": {"make": _mk_crucible_pullback,
-                          "desc": "CODEX card #66 (Setup123) entry architecture: EMA-stack trend filter (fast>mid>slow), pullback below fast EMA then resume above it, CrucibleTrend management. Isolates entry quality vs crucible_trend. Params: fast, mid, slow, atr_period, atr_stop_mult, target_r, max_hold_bars, allow_shorts, trade_size."},
+                          "desc": "CODEX card #66 (Setup123) entry architecture: EMA-stack trend filter (fast>mid>slow), pullback below fast EMA then resume above it, CrucibleTrend management. Isolates entry quality vs crucible_trend. Params: fast, mid, slow, atr_period, atr_stop_mult, target_r, max_hold_bars, allow_shorts, trade_size, min_stack_sep_pct (regime gate: min fast/slow EMA separation as % of close before a stack counts; 0.0 = off)."},
     "ema_cross": {"make": _mk_ema_cross,
                   "desc": "Canonical EMA cross, market in/out. Params: fast, slow, trade_size."},
     "crucible_reversion": {"make": _mk_crucible_reversion,
@@ -364,6 +365,26 @@ BATTERY = [
     {"strategy": "ema_cross", "symbol": "BTC", "interval": "4h", "days": 365,
      "params": {"fast": 50, "slow": 200}, "codexId": 63,
      "note": "CODEX sweep: #63 Multi_MA golden cross 50/200 on 4h (naive in/out baseline)"},
+    # Regime-gated #66 (Sultan's Review 2026-09-10): ungated pullback decays
+    # monotonically toward the present (BTC 1.359→0.537, ETH 1.594→0.587).
+    # min_stack_sep_pct demands a REAL trend before the stack qualifies —
+    # rescue question on 90d, preservation question on 365d. Ungated archived
+    # assays are the controls (params {} → distinct specs, no collisions).
+    {"strategy": "crucible_pullback", "symbol": "BTC", "interval": "4h", "days": 90,
+     "params": {"min_stack_sep_pct": 0.5}, "codexId": 66,
+     "note": "gated #66 rescue probe: BTC 90d, sep 0.5% (control: ungated 0.537)"},
+    {"strategy": "crucible_pullback", "symbol": "BTC", "interval": "4h", "days": 90,
+     "params": {"min_stack_sep_pct": 1.0}, "codexId": 66,
+     "note": "gated #66 rescue probe: BTC 90d, sep 1.0% (dose response)"},
+    {"strategy": "crucible_pullback", "symbol": "ETH", "interval": "4h", "days": 90,
+     "params": {"min_stack_sep_pct": 0.5}, "codexId": 66,
+     "note": "gated #66 rescue probe: ETH 90d, sep 0.5% (control: ungated 0.587)"},
+    {"strategy": "crucible_pullback", "symbol": "BTC", "interval": "4h", "days": 365,
+     "params": {"min_stack_sep_pct": 0.5}, "codexId": 66,
+     "note": "gated #66 preservation probe: BTC 365d, sep 0.5% (control: ungated 1.359)"},
+    {"strategy": "crucible_pullback", "symbol": "ETH", "interval": "4h", "days": 365,
+     "params": {"min_stack_sep_pct": 0.5}, "codexId": 66,
+     "note": "gated #66 preservation probe: ETH 365d, sep 0.5% (control: ungated 1.594)"},
 ]
 _battery_state = {"pending": len(BATTERY), "ran": 0, "errors": []}
 

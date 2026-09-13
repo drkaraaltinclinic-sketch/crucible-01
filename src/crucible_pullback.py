@@ -8,6 +8,15 @@ crucible_trend assays (#38 family) — same management, different trigger.
 Long setup:  fast > mid > slow (stacked uptrend), price pulls back to close
 below the fast EMA while the stack holds, then closes back above the fast
 EMA → enter long on that resume bar. Shorts mirror. One position at a time.
+
+Regime gate (Sultan's Review 2026-09-10): min_stack_sep_pct requires the
+fast/slow EMA separation to exceed a threshold (percent of close) before a
+stack counts as a trend — the exact mirror of crucible_reversion's band
+gate, pointed the other way. Ungated assays showed monotonic PF decay
+toward the present (BTC 365d 1.359 → 90d 0.537); the gate asks whether
+demanding a REAL trend rescues the recent window without killing the
+full-year edge. Default 0.0 = gate off = bit-identical to the ungated
+strategy, so existing archived assays remain valid comparators.
 """
 
 from decimal import Decimal
@@ -32,6 +41,7 @@ class CruciblePullbackConfig(StrategyConfig, frozen=True):
     target_r: float = 2.0
     max_hold_bars: int = 72
     allow_shorts: bool = True
+    min_stack_sep_pct: float = 0.0  # 0.0 = gate off (bit-identical to ungated)
 
 
 class CruciblePullback(Strategy):
@@ -100,6 +110,15 @@ class CruciblePullback(Strategy):
                 return
             up_stack = self.fast.value > self.mid.value > self.slow.value
             dn_stack = self.fast.value < self.mid.value < self.slow.value
+            if self.config.min_stack_sep_pct > 0.0 and close > 0:
+                # separation of the outer EMAs as a percent of price — the
+                # reversion band gate mirrored: reversion trades when this is
+                # SMALL (ranging), the pullback gate demands it be LARGE
+                # (established trend) before a stack qualifies.
+                sep_pct = abs(self.fast.value - self.slow.value) / close * 100.0
+                if sep_pct < self.config.min_stack_sep_pct:
+                    up_stack = False
+                    dn_stack = False
             if up_stack:
                 if close < self.fast.value:
                     self.pulled_back = 1  # pullback registered; stack intact
