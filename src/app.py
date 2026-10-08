@@ -36,6 +36,7 @@ from nautilus_trader.examples.strategies.ema_cross import EMACross, EMACrossConf
 from src.crucible_trend import CrucibleTrend, CrucibleTrendConfig
 from src.crucible_reversion import CrucibleReversion, CrucibleReversionConfig
 from src.crucible_pullback import CruciblePullback, CruciblePullbackConfig
+from src.crucible_gaussian import CrucibleGaussian, CrucibleGaussianConfig
 from src.crucible_rotation import run_rotation
 from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.data import BarType
@@ -141,7 +142,27 @@ def _mk_crucible_pullback(iid, bar_type, p):
         allow_shorts=bool(p.get("allow_shorts", True)),
         min_stack_sep_pct=float(p.get("min_stack_sep_pct", 0.0))))
 
+def _mk_crucible_gaussian(iid, bar_type, p):
+    return CrucibleGaussian(CrucibleGaussianConfig(
+        instrument_id=iid, bar_type=bar_type,
+        trade_size=Decimal(str(p.get("trade_size", 0.1))),
+        gaussian_length=int(p.get("gaussian_length", 14)),
+        gaussian_poles=int(p.get("gaussian_poles", 4)),
+        atr_period=int(p.get("atr_period", 14)),
+        fixed_multiplier=float(p.get("fixed_multiplier", 1.5)),
+        adaptive_width=bool(p.get("adaptive_width", True)),
+        trend_multiplier=float(p.get("trend_multiplier", 0.8)),
+        chop_multiplier=float(p.get("chop_multiplier", 2.5)),
+        efficiency_length=int(p.get("efficiency_length", 10)),
+        efficiency_smooth=int(p.get("efficiency_smooth", 5)),
+        atr_stop_mult=float(p.get("atr_stop_mult", 1.5)),
+        target_r=float(p.get("target_r", 2.0)),
+        max_hold_bars=int(p.get("max_hold_bars", 72)),
+        allow_shorts=bool(p.get("allow_shorts", True))))
+
 STRATEGIES = {
+    "crucible_gaussian": {"make": _mk_crucible_gaussian,
+                          "desc": "CODEX card #71 (Gaussian Filter Trend [QuantAlgo]) entry architecture: Ehlers N-pole Gaussian basis, ER-adaptive ATR deadband, ratcheting trend line; entries on direction flips only, CrucibleTrend management. Params: gaussian_length, gaussian_poles, atr_period, fixed_multiplier, adaptive_width, trend_multiplier, chop_multiplier, efficiency_length, efficiency_smooth, atr_stop_mult, target_r, max_hold_bars, allow_shorts, trade_size."},
     "crucible_pullback": {"make": _mk_crucible_pullback,
                           "desc": "CODEX card #66 (Setup123) entry architecture: EMA-stack trend filter (fast>mid>slow), pullback below fast EMA then resume above it, CrucibleTrend management. Isolates entry quality vs crucible_trend. Params: fast, mid, slow, atr_period, atr_stop_mult, target_r, max_hold_bars, allow_shorts, trade_size, min_stack_sep_pct (regime gate: min fast/slow EMA separation as % of close before a stack counts; 0.0 = off)."},
     "ema_cross": {"make": _mk_ema_cross,
@@ -385,6 +406,15 @@ BATTERY = [
     {"strategy": "crucible_pullback", "symbol": "ETH", "interval": "4h", "days": 365,
      "params": {"min_stack_sep_pct": 0.5}, "codexId": 66,
      "note": "gated #66 preservation probe: ETH 365d, sep 0.5% (control: ungated 1.594)"},
+    # CODEX template round (Dr K directive 2026-10-03: push #71/#64 through the
+    # funnel, one template per review). #71 Gaussian flip entries vs canonical
+    # #38 (BTC 4h 365d 1.279) and the refuted ETH clones (#33/#40 ~0.9).
+    {"strategy": "crucible_gaussian", "symbol": "BTC", "interval": "4h", "days": 365,
+     "params": {}, "codexId": 71, "note": "CODEX #71 Gaussian: BTC 4h full-year vs canonical #38 (1.279)"},
+    {"strategy": "crucible_gaussian", "symbol": "BTC", "interval": "4h", "days": 90,
+     "params": {}, "codexId": 71, "note": "CODEX #71 Gaussian: BTC 4h recent-regime check"},
+    {"strategy": "crucible_gaussian", "symbol": "ETH", "interval": "4h", "days": 365,
+     "params": {}, "codexId": 71, "note": "CODEX #71 Gaussian: ETH 4h — does the flip entry travel where 8/24 cross did not"},
 ]
 _battery_state = {"pending": len(BATTERY), "ran": 0, "errors": []}
 
